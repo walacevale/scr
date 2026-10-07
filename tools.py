@@ -1,5 +1,10 @@
 import cv2
 import numpy as np
+from skimage.measure import label, regionprops
+from skimage.transform import rotate
+from skimage.filters import threshold_otsu
+
+from tools import *
 
 def add_one_pixel_border(image):
     border_image = cv2.copyMakeBorder(
@@ -39,11 +44,8 @@ def make_square(image):
 
 
 def fractal_dimension(image):
-    
-
     height, width = image.shape[:2]
     
-
     # Box sizes: exclude 1 pixel and the full image size
     box_sizes = 2 ** np.arange(1, int(np.log2(height)))
     counts = []
@@ -84,24 +86,132 @@ def fractal_dimension(image):
     return slope
 
 
-def rotate_image(image, angle):
+def dilate_image(image, kernel_size=4, iterations=1):
+
+    kernel = np.ones(
+        (kernel_size, kernel_size),
+        np.uint8
+    )
+
+    dilated_image = cv2.dilate(
+        image,
+        kernel,
+        iterations=iterations
+    )
+
+    return dilated_image
+
+def crop_object(image):
+
+    dilated_image = dilate_image(image)
+
+    label_image = label(dilated_image > 0)
+    regions = regionprops(label_image)
+
+    if not regions:
+        raise ValueError("No object found in image.")
+
+    region = max(regions, key=lambda r: r.area)
+
+    minr, minc, maxr, maxc = region.bbox
+
+    return image[minr:maxr, minc:maxc]
+
+
+def make_square_crop(image, margin=10):
+
     height, width = image.shape[:2]
 
-    center = (width / 2, height / 2)
+    size = max(height, width) + 2 * margin
 
-    rotation_matrix = cv2.getRotationMatrix2D(
-        center,
-        angle,
-        1.0
+    square = np.zeros(
+        (size, size),
+        dtype=image.dtype
     )
 
-    rotated_image = cv2.warpAffine(
+    y = (size - height) // 2
+    x = (size - width) // 2
+
+    square[
+        y:y + height,
+        x:x + width
+    ] = image
+
+    return square
+
+def rotate_image(image, angle):
+
+    return rotate(
         image,
-        rotation_matrix,
-        (width, height),
-        flags=cv2.INTER_NEAREST,
-        borderMode=cv2.BORDER_CONSTANT,
-        borderValue=0
+        angle,
+        resize=True,
+        preserve_range=True
     )
 
-    return rotated_image
+def prepare_image(image, margin=10):
+
+    cropped = crop_object(image)
+
+    square = make_square_crop(
+        cropped,
+        margin=margin
+    )
+
+    return square
+
+
+
+def calculate_fractal_dimension(image, n_rotations=20, seed=None):
+    """
+    Calculate the mean fractal dimension of an image
+    over multiple random rotations.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Input grayscale image.
+
+    n_rotations : int, optional
+        Number of random rotations used to calculate
+        the mean fractal dimension.
+
+    seed : int or None, optional
+        Seed for reproducibility of the random angles.
+
+    Returns
+    -------
+    float
+        Mean fractal dimension.
+    """
+
+    # Prepare image
+    image = np.invert(image)
+
+    threshold = threshold_otsu(image)
+    binary_image = ((image > threshold) * 255).astype(np.uint8)
+
+    binary_image = make_square(binary_image)
+    binary_image = add_one_pixel_border(binary_image)
+
+    prepared_image = prepare_image(binary_image)
+
+    # Generate random angles
+    rng = np.random.default_rng(seed)
+    angles = rng.uniform(0, 360, n_rotations)
+
+    # Calculate fractal dimension
+    fractal_dimensions = []
+
+    for angle in angles:
+        rotated_image = rotate_image(
+            prepared_image,
+            angle
+        )
+
+        rotated_image = prepare_image(rotated_image)
+
+        D = fractal_dimension(rotated_image)
+
+        fractal_dimensions.append(D)
+
+    return np.mean(fractal_dimensions)
